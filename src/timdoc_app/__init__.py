@@ -1,0 +1,1 @@
+"""Timdoc desktop application."""

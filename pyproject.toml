@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "timdoc"
+version = "0.1.0"
+description = "Локальное Windows-приложение для заполнения комплектов документов по акту"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "timdoc-act-parser",
+  "timdoc-contracts",
+  "timdoc-customer-store",
+  "timdoc-document-generator",
+]
+
+[project.optional-dependencies]
+desktop = [
+  "pywebview>=5.4,<7",
+  "pywin32>=308; sys_platform == 'win32'",
+]
+dev = [
+  "mypy==1.18.2",
+  "pre-commit==4.3.0",
+  "pytest==8.4.2",
+  "pytest-cov==7.0.0",
+  "ruff==0.13.2",
+]
+build = [
+  "pyinstaller==6.16.0",
+]
+
+[project.scripts]
+timdoc = "timdoc_app.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/timdoc_app"]
+artifacts = ["src/timdoc_app/ui/**"]
+
+[tool.uv.workspace]
+members = ["contracts", "services/*"]
+
+[tool.uv.sources]
+timdoc-act-parser = { workspace = true }
+timdoc-contracts = { workspace = true }
+timdoc-customer-store = { workspace = true }
+timdoc-document-generator = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["contracts/tests", "services", "tests"]
+addopts = "-ra -q --strict-markers --cov=timdoc_app --cov=timdoc_act_parser --cov=timdoc_customer_store --cov=timdoc_document_generator --cov-report=term-missing --cov-fail-under=85"
+markers = ["eval: deterministic product evaluation"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "RUF"]
+# RUF001-003: русские строки, комментарии и докстринги содержат "похожие" на латиницу буквы.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "timdoc_app",
+  "timdoc_act_parser",
+  "timdoc_contracts",
+  "timdoc_customer_store",
+  "timdoc_document_generator",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+packages = [
+  "timdoc_app",
+  "timdoc_act_parser",
+  "timdoc_contracts",
+  "timdoc_customer_store",
+  "timdoc_document_generator",
+]
+
+[dependency-groups]
+dev = [
+    "pdf2image==1.17.0",
+]

@@ -1,0 +1,31 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: uv sync --all-packages --extra desktop --extra dev --extra build
+      - run: uv run pytest
+      - run: uv run pyinstaller packaging/timdoc.spec --clean --noconfirm
+      - run: dist\Timdoc\Timdoc.exe --self-test
+      - run: Compress-Archive -Path dist\Timdoc -DestinationPath dist\Timdoc-Windows.zip
+      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\Timdoc.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Timdoc-Windows
+          path: |
+            dist/Timdoc-Windows.zip
+            dist/Timdoc-Setup.exe
+          if-no-files-found: error
