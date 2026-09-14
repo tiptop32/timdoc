@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "timdoc-customer-store"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["timdoc-contracts"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/timdoc_customer_store"]
+
+[tool.uv.sources]
+timdoc-contracts = { workspace = true }
+

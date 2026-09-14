@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timdoc</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="Timdoc, начало">TIMDOC</a>
+    <button id="settings-open" class="button ghost" type="button">Настройки</button>
+  </header>
+  <main id="top" class="shell">
+    <section class="hero">
+      <p class="eyebrow">Документы по акту</p>
+      <h1>Комплект для обслуживания техники</h1>
+      <p>Выберите PDF, проверьте реквизиты и получите три DOCX на каждую единицу.</p>
+    </section>
+
+    <nav class="steps" aria-label="Этапы заполнения">
+      <span class="step active" data-step="1"><b>1</b> Акт</span>
+      <span class="step" data-step="2"><b>2</b> Проверка</span>
+      <span class="step" data-step="3"><b>3</b> Готово</span>
+    </nav>
+
+    <section id="stage-upload" class="card stage">
+      <div class="stage-title"><span>01</span><div><h2>Выберите акт</h2><p>Поддерживается PDF с текстовым слоем.</p></div></div>
+      <button id="choose-pdf" class="dropzone" type="button">
+        <span class="drop-icon">PDF</span>
+        <strong>Выбрать файл акта</strong>
+        <small id="pdf-path">Файл не выбран</small>
+      </button>
+    </section>
+
+    <section id="stage-review" class="card stage hidden" aria-labelledby="review-title">
+      <div class="stage-title"><span>02</span><div><h2 id="review-title">Проверьте данные</h2><p id="review-summary"></p></div></div>
+      <div id="warnings" class="warnings hidden" role="status"></div>
+
+      <fieldset>
+        <legend>Хозяйство</legend>
+        <div class="form-grid">
+          <label class="wide">Название<input name="customer_name" autocomplete="organization"></label>
+          <label>ИНН<input name="customer_inn" inputmode="numeric" maxlength="12"></label>
+          <label class="wide">Полный адрес<input name="customer_address"></label>
+          <label>Страна<input name="customer_country"></label>
+          <label>Индекс<input name="customer_postal_code" inputmode="numeric"></label>
+          <label>Регион<input name="customer_region"></label>
+          <label>Район<input name="customer_district"></label>
+          <label>Населенный пункт<input name="customer_locality"></label>
+          <label>Улица<input name="customer_street"></label>
+          <label>Дом<input name="customer_house"></label>
+          <label>Контактное лицо<input name="representative_name"></label>
+          <label>Должность<input name="representative_position"></label>
+          <label>Телефон<input name="customer_phone" inputmode="tel"></label>
+          <label>Email<input name="customer_email" inputmode="email"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <div class="legend-row"><legend>Техника</legend><button id="add-equipment" class="text-button" type="button">+ Добавить</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Модель</th><th>Заводской номер</th><th>Год</th><th><span class="sr-only">Действия</span></th></tr></thead><tbody id="equipment-body"></tbody></table></div>
+      </fieldset>
+
+      <div class="output-row">
+        <label>Папка сохранения<input id="output-path" readonly placeholder="Выберите папку"></label>
+        <button id="choose-output" class="button secondary" type="button">Выбрать</button>
+      </div>
+      <div class="actions"><button id="generate" class="button primary" type="button">Создать документы</button></div>
+    </section>
+
+    <section id="stage-result" class="card result hidden" aria-labelledby="result-title">
+      <span class="success-mark">✓</span>
+      <p class="eyebrow">Комплект готов</p>
+      <h2 id="result-title">Документы созданы</h2>
+      <p id="result-summary"></p>
+      <div class="result-path"><span>ZIP-архив</span><strong id="archive-path"></strong></div>
+      <button id="new-act" class="button primary" type="button">Заполнить другой акт</button>
+    </section>
+  </main>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" id="settings-form">
+      <div class="dialog-head"><div><p class="eyebrow">Параметры</p><h2>Настройки</h2></div><button class="icon-button" value="cancel" aria-label="Закрыть">×</button></div>
+      <label>Сервисный центр<input name="organization" required></label>
+      <label>Место составления<input name="service_location"></label>
+      <label>Должность сотрудника<input name="employee_position" required></label>
+      <label>Ф.И.О. сотрудника<input name="employee_name" required></label>
+      <label>Папка исходных шаблонов<input name="template_directory" readonly required></label>
+      <button id="choose-templates" class="button secondary" type="button">Выбрать папку шаблонов</button>
+      <div class="dialog-actions"><button class="button ghost" value="cancel">Отмена</button><button id="save-settings" class="button primary" type="button">Сохранить</button></div>
+    </form>
+  </dialog>
+  <div id="busy" class="busy hidden" role="status" aria-live="polite"><span></span><strong>Обрабатываю документы…</strong></div>
+  <div id="toast" class="toast hidden" role="alert"></div>
+  <script src="app.js"></script>
+</body>
+</html>
