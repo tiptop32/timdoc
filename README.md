@@ -72,5 +72,17 @@ dist\Timdoc\Timdoc.exe --self-test
 GitHub Actions собирает переносимую ZIP-папку и установщик. Бинарные файлы в Git
 не добавляются.
 
+Чтобы опубликовать новую версию в блоке Releases, создайте и отправьте аннотированный
+тег формата `vX.Y.Z`:
+
+```powershell
+git tag -a v0.1.0 -m "Timdoc 0.1.0"
+git push origin v0.1.0
+```
+
+Workflow `Windows build` запускает тесты и self-test, затем прикрепляет
+`Timdoc-Windows.zip` и `Timdoc-Setup.exe` к GitHub Release. Ручной запуск workflow
+создает только временный artifact и не публикует Release.
+
 Подробности: [архитектура](docs/architecture.md),
 [приемка](docs/acceptance.md), [решение проблем](docs/troubleshooting.md).
