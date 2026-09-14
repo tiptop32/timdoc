@@ -106,15 +106,17 @@ def test_bridge_file_dialogs_return_the_selected_path(fake_webview: types.Module
     assert bridge.window.dialogs[0][0] == "folder"
 
 
+@pytest.mark.eval
 def test_run_desktop_opens_the_local_spa(
     fake_webview: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(desktop, "create_default_facade", lambda: StubFacade())
     run_desktop()
     created = fake_webview.created  # type: ignore[attr-defined]
+    expected_page = Path(desktop.__file__).with_name("ui") / "index.html"
     assert created["title"] == "Timdoc"
-    assert created["url"].startswith("file://") and created["url"].endswith("/ui/index.html")
-    assert Path(created["url"].removeprefix("file://")).is_file()
+    assert expected_page.is_file()
+    assert created["url"] == expected_page.as_uri()
     assert isinstance(created["js_api"], DesktopBridge)
     assert created["js_api"].window is not None
     assert created["started"] == {"debug": False, "private_mode": True}
