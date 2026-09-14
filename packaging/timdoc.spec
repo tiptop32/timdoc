@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 root = Path(SPECPATH).parent
 hiddenimports = collect_submodules("webview")
@@ -9,7 +9,11 @@ analysis = Analysis(
     [str(root / "src" / "timdoc_app" / "__main__.py")],
     pathex=[str(root / "src")],
     binaries=[],
-    datas=[(str(root / "src" / "timdoc_app" / "ui"), "timdoc_app/ui")],
+    datas=[
+        (str(root / "src" / "timdoc_app" / "ui"), "timdoc_app/ui"),
+        # Таблица ширин Tahoma для подгонки значений под линии (metrics.py).
+        *collect_data_files("timdoc_document_generator", includes=["*.json"]),
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],

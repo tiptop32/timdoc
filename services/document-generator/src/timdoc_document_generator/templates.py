@@ -49,7 +49,7 @@ class TemplatePreparer:
             raise TemplatePreparationError(f"Папка шаблонов не найдена: {source_directory}")
 
         sources = {
-            "Талон": self._find_source(source_directory, "талон", suffixes={".docx"}),
+            "Талон": self._find_source(source_directory, "талон"),
             "Форма 4": self._find_source(source_directory, "форма 4"),
             "Форма 11": self._find_source(source_directory, "форма 11"),
         }
@@ -78,17 +78,19 @@ class TemplatePreparer:
             prefix=".timdoc-templates-", dir=destination_directory.parent
         ) as temp:
             work = Path(temp)
-            ticket_source = resolved_sources["Талон"]
-            _patch_docx(ticket_source, work / "Талон.docx", _prepare_ticket_xml)
-
-            for name in ("Форма 4", "Форма 11"):
+            transforms = {
+                "Талон": _prepare_ticket_xml,
+                "Форма 4": _prepare_form_xml,
+                "Форма 11": _prepare_form_xml,
+            }
+            for name, transform in transforms.items():
                 source = resolved_sources[name]
                 converted = work / f"{name}-converted.docx"
                 if source.suffix.casefold() == ".docx":
                     shutil.copyfile(source, converted)
                 else:
                     selected_converter.convert(source, converted)
-                _patch_docx(converted, work / f"{name}.docx", _prepare_form_xml)
+                _patch_docx(converted, work / f"{name}.docx", transform)
 
             manifest = {"schema_version": 1, "sources": fingerprints}
             (work / "templates.json").write_text(
@@ -150,9 +152,14 @@ class WindowsWordConverter:
                 f"Word не смог преобразовать {source.name}: {error}"
             ) from error
         finally:
-            if document is not None:
-                document.Close(SaveChanges=False)
-            word.Quit()
+            try:
+                if document is not None:
+                    document.Close(SaveChanges=False)
+            except Exception:
+                # Word has already written the file; a failing Close must not keep Word alive.
+                pass
+            finally:
+                word.Quit()
 
 
 # Word for Mac runs in the App Sandbox: every path outside its own containers triggers the
@@ -294,16 +301,19 @@ RPR_ORDER = (
     "oMath",
 )
 BLANK_LINE = re.compile(r"_{3,}")
-BLANK_DATE = re.compile(r"[«\"]_+[»\"]_*\s*20\s*_*\s*г\.")
 TICKET_SIGNATURE_LINE = 21
 BODY_FONT_SIZE = "22"
 
 
-def _patch_docx(source: Path, destination: Path, transform: Callable[[ET._Element], None]) -> None:
+Transform = Callable[[ET._Element, "StyleSheet"], None]
+
+
+def _patch_docx(source: Path, destination: Path, transform: Transform) -> None:
     try:
         with zipfile.ZipFile(source) as archive:
             root = ET.fromstring(archive.read("word/document.xml"))
-            transform(root)
+            styles = StyleSheet.from_archive(archive)
+            transform(root, styles)
             _validate_namespace_hints(root)
             document_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             with zipfile.ZipFile(destination, "w") as output:
@@ -316,13 +326,65 @@ def _patch_docx(source: Path, destination: Path, transform: Callable[[ET._Elemen
         raise TemplatePreparationError(f"Не удалось подготовить {source.name}: {error}") from error
 
 
-def _prepare_ticket_xml(root: ET._Element) -> None:
+class StyleSheet:
+    """Enough of styles.xml to tell whether a run renders bold: the weight of the blank
+    decides how wide its underscores are, and it usually comes from the paragraph style."""
+
+    def __init__(self, bold_by_style: dict[str, bool | None], based_on: dict[str, str]) -> None:
+        self._bold = bold_by_style
+        self._based_on = based_on
+
+    @classmethod
+    def from_archive(cls, archive: zipfile.ZipFile) -> StyleSheet:
+        try:
+            root = ET.fromstring(archive.read("word/styles.xml"))
+        except KeyError:
+            return cls({}, {})
+        bold: dict[str, bool | None] = {}
+        based_on: dict[str, str] = {}
+        for style in root.findall("./w:style", NS):
+            style_id = style.get(f"{{{W}}}styleId")
+            if not style_id:
+                continue
+            bold[style_id] = _bold_flag(style.find("./w:rPr", NS))
+            parent = style.find("./w:basedOn", NS)
+            if parent is not None and parent.get(f"{{{W}}}val"):
+                based_on[style_id] = parent.get(f"{{{W}}}val")
+        return cls(bold, based_on)
+
+    def is_bold(self, paragraph: ET._Element, properties: ET._Element | None) -> bool:
+        direct = _bold_flag(properties)
+        if direct is not None:
+            return direct
+        style = paragraph.find("./w:pPr/w:pStyle", NS)
+        style_id = style.get(f"{{{W}}}val") if style is not None else None
+        seen: set[str] = set()
+        while style_id and style_id not in seen:
+            seen.add(style_id)
+            flag = self._bold.get(style_id)
+            if flag is not None:
+                return flag
+            style_id = self._based_on.get(style_id)
+        return False
+
+
+def _bold_flag(properties: ET._Element | None) -> bool | None:
+    if properties is None:
+        return None
+    bold = properties.find("./w:b", NS)
+    if bold is None:
+        return None
+    return bold.get(f"{{{W}}}val", "1") not in ("0", "false")
+
+
+def _prepare_ticket_xml(root: ET._Element, styles: StyleSheet) -> None:
     outer = root.find(".//w:body/w:tbl", NS)
     if outer is None:
         raise TemplatePreparationError("В талоне не найдена основная таблица")
     outer_cells = outer.findall("./w:tr/w:tc", NS)
     if len(outer_cells) != 2:
         raise TemplatePreparationError("Талон должен содержать две печатные копии")
+    _equalize_copies(outer, outer_cells)
     for outer_cell in outer_cells:
         nested = outer_cell.find("./w:tbl", NS)
         if nested is None:
@@ -347,7 +409,7 @@ def _prepare_ticket_xml(root: ET._Element) -> None:
         _set_ticket_value(rows[23], "{{ customer_email }}")
         _set_ticket_pair(rows[25], "", "{{ customer_phone }}")
         _set_ticket_value(rows[27], "{{ service_center }}")
-        _set_ticket_value(rows[29], "{{ document_date }}")
+        # Строка 29 «Дата постановки на гарантийный учет» остаётся пустой: её заполняют от руки.
 
         direct_paragraphs = outer_cell.findall("./w:p", NS)
         service_index = next(
@@ -369,14 +431,30 @@ def _prepare_ticket_xml(root: ET._Element) -> None:
             )
             if signature is not None and not _fill_blank(
                 signature,
-                lambda _blank, _properties: " {{ service_employee }} ",
+                lambda _blank, _properties: [(" {{ service_employee }} ", _plain_style)],
                 keep_left=TICKET_SIGNATURE_LINE,
-                style=_plain_style,
             ):
                 _set_element_text(signature, "_____________________ {{ service_employee }} М.П.")
         # Фамилия набрана размером основного текста, как в заполненном образце; чтобы талон
         # остался на одной странице, хвостовые пустые абзацы ячейки убираются так же, как в нём.
         _drop_trailing_empty_paragraphs(outer_cell)
+
+
+def _equalize_copies(outer: ET._Element, outer_cells: list[ET._Element]) -> None:
+    """Give both printed copies the same width: the source template has a narrower right cell,
+    so long values wrapped only in one copy and the halves ended up different heights."""
+    columns = outer.findall("./w:tblGrid/w:gridCol", NS)
+    widths = [int(column.get(f"{{{W}}}w") or 0) for column in columns]
+    if len(widths) != 2 or not all(widths):
+        return
+    total = sum(widths)
+    shares = (total // 2, total - total // 2)
+    for column, share in zip(columns, shares, strict=True):
+        column.set(f"{{{W}}}w", str(share))
+    for cell, share in zip(outer_cells, shares, strict=True):
+        width = cell.find("./w:tcPr/w:tcW", NS)
+        if width is not None and width.get(f"{{{W}}}type", "dxa") == "dxa":
+            width.set(f"{{{W}}}w", str(share))
 
 
 def _drop_trailing_empty_paragraphs(cell: ET._Element) -> None:
@@ -393,15 +471,15 @@ def _drop_trailing_empty_paragraphs(cell: ET._Element) -> None:
 
 # Каждое поле формы: подпись под линией -> имя переменной. Линия над подписью заполняется
 # значением, отцентрованным в подчёркиваниях той же ширины (фильтр blank в генераторе).
+# «Дата составления» и контактное лицо потребителя намеренно не заполняются: в подписанных
+# образцах их вписывают от руки при подписании.
 FORM_FIELDS = {
     "место составления": "service_location",
-    "дата составления": "document_date",
     "(наименование организации)": "service_center",
     "(марка продукции)": "equipment_name",
     "(номер)": "serial_number",
     "(наименование организации, инн)": "customer_name_inn",
     "(адрес организации)": "customer_address",
-    "(ф.и.о., должность и телефон контактного лица потребителя)": "customer_contact",
 }
 REQUIRED_FORM_FIELDS = {
     "(наименование организации)",
@@ -412,7 +490,7 @@ REQUIRED_FORM_FIELDS = {
 }
 
 
-def _prepare_form_xml(root: ET._Element) -> None:
+def _prepare_form_xml(root: ET._Element, styles: StyleSheet) -> None:
     paragraphs = root.findall(".//w:p", NS)
     found: set[str] = set()
     for index, paragraph in enumerate(paragraphs):
@@ -423,17 +501,7 @@ def _prepare_form_xml(root: ET._Element) -> None:
         target = _previous_nonempty(paragraphs, index)
         if target is None:
             raise TemplatePreparationError(f"Нет поля перед подписью {label}")
-        filled = False
-        if variable == "document_date":
-            filled = _fill_blank(
-                target,
-                lambda _blank, _properties: "{{ document_date }}",
-                pattern=BLANK_DATE,
-                style=_value_style,
-            )
-        if not filled:
-            filled = _fill_blank(target, _line_placeholder(variable), style=_value_style)
-        if not filled:
+        if not _fill_blank(target, _line_placeholder(variable, target, styles)):
             raise TemplatePreparationError(f"Над подписью {label} нет линии для заполнения")
         found.add(label)
     missing = REQUIRED_FORM_FIELDS - found
@@ -445,27 +513,39 @@ def _prepare_form_xml(root: ET._Element) -> None:
         if "(должность)" in label:
             target = _previous_nonempty(paragraphs, index)
             if target is not None:
-                _fill_blank(
-                    target, _line_placeholder("service_employee_position"), style=_value_style
-                )
+                _fill_blank(target, _line_placeholder("service_employee_position", target, styles))
         if "м.п." in label and "(ф.и.о.)" in label:
             target = _previous_nonempty(paragraphs, index)
             if target is not None:
                 # Первый блок подчёркиваний отведён под подпись, второй под фамилию исполнителя.
                 _fill_blank(
-                    target,
-                    _line_placeholder("service_employee"),
-                    occurrence=1,
-                    style=_value_style,
+                    target, _line_placeholder("service_employee", target, styles), occurrence=1
                 )
 
 
-def _line_placeholder(variable: str) -> Callable[[str, ET._Element | None], str]:
-    """Placeholder that keeps the physical width of the blank once it is set in the body size."""
+Segment = tuple[str, "Style | None"]
+Style = Callable[[ET._Element | None], ET._Element | None]
 
-    def placeholder(blank: str, properties: ET._Element | None) -> str:
-        width = round(len(blank) * _font_size(properties) / int(BODY_FONT_SIZE))
-        return f"{{{{ {variable} | blank({width}) }}}}"
+
+def _line_placeholder(
+    variable: str, paragraph: ET._Element, styles: StyleSheet
+) -> Callable[[str, ET._Element | None], list[Segment]]:
+    """Three runs: underscores in the blank's own style on both sides, the value in body style.
+
+    The padding keeps the blank's size and weight (a bold style makes underscores wider),
+    so the generator can compute how many of them the value displaces (filters blank_left
+    and blank_right) and the line keeps its printed length.
+    """
+
+    def placeholder(blank: str, properties: ET._Element | None) -> list[Segment]:
+        size = _font_size(properties)
+        bold = "True" if styles.is_bold(paragraph, properties) else "False"
+        spec = f"{len(blank)}, {size}, {bold}"
+        return [
+            (f"{{{{ {variable} | blank_left({spec}) }}}}", None),
+            (f"{{{{ {variable} }}}}", _value_style),
+            (f"{{{{ {variable} | blank_right({spec}) }}}}", None),
+        ]
 
     return placeholder
 
@@ -480,18 +560,18 @@ def _font_size(properties: ET._Element | None) -> int:
 
 def _fill_blank(
     paragraph: ET._Element,
-    replacement: Callable[[str, ET._Element | None], str],
+    replacement: Callable[[str, ET._Element | None], list[Segment]],
     *,
     pattern: re.Pattern[str] = BLANK_LINE,
     occurrence: int = 0,
     keep_left: int = 0,
-    style: Callable[[ET._Element | None], ET._Element | None] | None = None,
 ) -> bool:
     """Replace one blank (a run of underscores) inside a paragraph, keeping everything else.
 
     The paragraph is flattened into tokens (characters, tabs, opaque elements) that remember
-    their run properties, the matched blank is swapped for the replacement text, and the runs
-    are rebuilt so label prefixes, tab stops and the neighbouring blanks survive untouched.
+    their run properties, the matched blank is swapped for the replacement segments (each with
+    its own style, None = the blank's own properties), and the runs are rebuilt so label
+    prefixes, tab stops and the neighbouring blanks survive untouched.
     Returns False when the paragraph has no such blank.
     """
     runs = paragraph.findall("./w:r", NS)
@@ -520,10 +600,10 @@ def _fill_blank(
     if start >= end:
         return False
     original_properties = tokens[start][1]
-    value_properties = (style or copy.deepcopy)(original_properties)
-    replaced: list[tuple[str | ET._Element, ET._Element | None]] = [
-        (char, value_properties) for char in replacement(text[start:end], original_properties)
-    ]
+    replaced: list[tuple[str | ET._Element, ET._Element | None]] = []
+    for segment_text, style in replacement(text[start:end], original_properties):
+        segment_properties = (style or copy.deepcopy)(original_properties)
+        replaced.extend((char, segment_properties) for char in segment_text)
     tokens = tokens[:start] + replaced + tokens[end:]
 
     insert_at = list(paragraph).index(runs[0])
@@ -566,8 +646,11 @@ def _build_runs(
 
 
 def _value_style(properties: ET._Element | None) -> ET._Element:
-    """Run properties for a filled-in value: body font size, underlined like the blank."""
+    """Run properties for a filled-in value: body size, regular weight, underlined line."""
     result = copy.deepcopy(properties) if properties is not None else ET.Element(f"{{{W}}}rPr")
+    # Paragraph styles of some labels ("Место составления") are bold; values never are.
+    _set_run_property(result, "b", val="0")
+    _set_run_property(result, "bCs", val="0")
     _set_run_property(result, "sz", val=BODY_FONT_SIZE)
     _set_run_property(result, "szCs", val=BODY_FONT_SIZE)
     _set_run_property(result, "u", val="single")
@@ -575,13 +658,12 @@ def _value_style(properties: ET._Element | None) -> ET._Element:
 
 
 def _plain_style(properties: ET._Element | None) -> ET._Element | None:
-    """Run properties for the ticket signature: inherit the style size, drop bold."""
-    if properties is None:
-        return None
-    result = copy.deepcopy(properties)
+    """Run properties for the ticket signature: style size, regular weight, on the line."""
+    result = copy.deepcopy(properties) if properties is not None else ET.Element(f"{{{W}}}rPr")
     for tag in ("b", "bCs", "sz", "szCs"):
         for element in result.findall(f"./w:{tag}", NS):
             result.remove(element)
+    _set_run_property(result, "u", val="single")
     return result
 
 
@@ -627,6 +709,11 @@ def _set_element_text(element: ET._Element, value: str) -> None:
     if paragraph is None:
         paragraph = ET.SubElement(element, f"{{{W}}}p")
     run = ET.SubElement(paragraph, f"{{{W}}}r")
+    # An empty cell keeps its font only on the paragraph mark (pPr/rPr); a new run
+    # would otherwise fall back to the document default (Calibri instead of Tahoma).
+    mark_properties = paragraph.find("./w:pPr/w:rPr", NS)
+    if mark_properties is not None:
+        run.append(copy.deepcopy(mark_properties))
     text = ET.SubElement(run, f"{{{W}}}t")
     text.set(XML_SPACE, "preserve")
     text.text = value

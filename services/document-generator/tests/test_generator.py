@@ -8,7 +8,14 @@ import pytest
 from docx import Document
 
 from timdoc_contracts import Customer, EquipmentItem, GenerationRequest, ServiceSettings
-from timdoc_document_generator import DocumentGenerationError, DocumentGenerator, fill_blank
+from timdoc_document_generator import (
+    DocumentGenerationError,
+    DocumentGenerator,
+    blank_left,
+    blank_padding,
+    blank_right,
+    metrics,
+)
 
 
 def _write_template(path: Path, title: str) -> None:
@@ -19,9 +26,18 @@ def _write_template(path: Path, title: str) -> None:
     document.add_paragraph("Заводской номер: {{ serial_number }}")
     document.add_paragraph("Исполнитель: {{ service_center }} / {{ service_employee }}")
     document.add_paragraph("Дата: {{ document_date }}")
-    document.add_paragraph("Адрес: {{ customer_address | blank(30) }}")
-    document.add_paragraph("Контакт: {{ customer_contact | blank(20) }}")
-    document.add_paragraph("Организация: {{ customer_name_inn | blank(10) }}")
+    document.add_paragraph(
+        "Адрес: {{ customer_address | blank_left(30) }}{{ customer_address }}"
+        "{{ customer_address | blank_right(30) }}"
+    )
+    document.add_paragraph(
+        "Контакт: {{ customer_contact | blank_left(20) }}{{ customer_contact }}"
+        "{{ customer_contact | blank_right(20) }}"
+    )
+    document.add_paragraph(
+        "Организация: {{ customer_name_inn | blank_left(10, 22, True) }}{{ customer_name_inn }}"
+        "{{ customer_name_inn | blank_right(10, 22, True) }}"
+    )
     document.save(path)
 
 
@@ -136,15 +152,51 @@ def test_blank_lines_are_filled_or_left_for_handwriting(
     lines = {
         paragraph.text.split(":")[0]: paragraph.text for paragraph in Document(first).paragraphs
     }
+    # Ширина линии сохраняется по метрикам Tahoma: текст плюс подчёркивания = 30 подчёркиваний.
+    underscore = metrics.char_width("_")
     assert lines["Адрес"] == "Адрес: _________с. Рощинский_________"
+    assert (
+        0
+        <= 30 * underscore - metrics.text_width(lines["Адрес"].removeprefix("Адрес: "))
+        < underscore
+    )
     assert lines["Контакт"] == "Контакт: Главный инженер Иванов И.И."
     assert lines["Организация"] == "Организация: ООО «Рощинский», ИНН 0268104130"
 
 
-def test_blank_filter_centers_values_and_keeps_empty_lines_blank() -> None:
-    assert fill_blank("", 6) == "______"
-    assert fill_blank(None, 3) == "___"
-    assert fill_blank("ab", 6) == "__ab__"
-    assert fill_blank("abc", 6) == "_abc__"
-    assert fill_blank("  много   пробелов ", 20) == "___много пробелов___"
-    assert fill_blank("слишком длинное значение", 5) == "слишком длинное значение"
+def test_blank_padding_keeps_the_physical_line_width() -> None:
+    assert blank_padding("", 6) == (6, 0)
+    assert blank_padding(None, 3) == (3, 0)
+    assert blank_left("", 4) == "____" and blank_right("", 4) == ""
+    assert blank_padding("слишком длинное значение", 5) == (0, 0)
+    cases = (
+        ("Инженер", 35, 22, False),
+        ("Абдрахманов Т.М.", 21, 22, False),
+        ("RSM SS-780-13", 57, 22, False),
+        ("г. Уфа", 27, 22, True),
+        ("453100, Республика Башкортостан, с. Рощинский, ул. Ленина, 1", 118, 16, False),
+    )
+    for value, width, size, bold in cases:
+        left, right = blank_padding(value, width, size, bold)
+        unit = metrics.char_width("_", bold=bold) * size / 22
+        total = (left + right) * unit + metrics.text_width(value)
+        assert 0 <= width * unit - total < unit, (value, "не шире и не короче одного знака")
+        assert abs(left - right) <= 1
+    # Жирная линия шире: значение вытесняет меньше жирных подчёркиваний, чем обычных.
+    assert (
+        sum(blank_padding("г. Уфа", 27, 22, True)) > sum(blank_padding("г. Уфа", 27, 22, False)) - 2
+    )
+    assert blank_left("г. Уфа", 27, 22, True) == "_" * 11
+
+
+def test_tahoma_metrics_cover_russian_documents() -> None:
+    assert metrics.char_width("_") == 1118
+    assert metrics.char_width("_", bold=True) == 1304
+    assert metrics.char_width("Ш") > metrics.char_width("и") > metrics.char_width(".")
+    assert metrics.char_width("\u2603") == metrics.char_width("n"), (
+        "неизвестный символ = средняя буква"
+    )
+    assert metrics.underscores_for(0) == 0
+    assert metrics.underscores_for(-5) == 0
+    assert metrics.underscores_for(metrics.char_width("_") * 3) == 3
+    assert metrics.underscores_for(metrics.char_width("_") * 3 - 1) == 2, "только вниз"

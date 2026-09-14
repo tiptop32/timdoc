@@ -1,7 +1,9 @@
 from timdoc_document_generator.generator import (
     DocumentGenerationError,
     DocumentGenerator,
-    fill_blank,
+    blank_left,
+    blank_padding,
+    blank_right,
     template_environment,
 )
 from timdoc_document_generator.templates import (
@@ -21,7 +23,9 @@ __all__ = [
     "TemplatePreparer",
     "UnsupportedConverter",
     "WindowsWordConverter",
+    "blank_left",
+    "blank_padding",
+    "blank_right",
     "default_converter",
-    "fill_blank",
     "template_environment",
 ]

@@ -61,8 +61,8 @@ end run
 """
 
 
-def _render_with_word(document: Path) -> int:
-    """Return the page count Word produces for the document; raise if Word cannot open it."""
+def _render_with_word(document: Path) -> tuple[int, str, set[str]]:
+    """Render through Word: (page count, layout text, font names); raise if Word cannot open."""
     staging_root = OFFICE_GROUP_CONTAINER.expanduser() / "Timdoc"
     staging_root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="render-", dir=staging_root) as temp:
@@ -77,7 +77,14 @@ def _render_with_word(document: Path) -> int:
             check=False,
         )
         assert completed.returncode == 0, f"Word не открыл {document.name}: {completed.stderr}"
-        return len(PdfReader(pdf).pages)
+        reader = PdfReader(pdf)
+        text = "\n".join(page.extract_text(extraction_mode="layout") for page in reader.pages)
+        fonts: set[str] = set()
+        for page in reader.pages:
+            resources = page.get("/Resources") or {}
+            for font in (resources.get("/Font") or {}).values():
+                fonts.add(str(font.get_object().get("/BaseFont", "")))
+        return len(reader.pages), text, fonts
 
 
 def _text(path: Path) -> list[str]:
@@ -138,8 +145,10 @@ def test_real_templates_fill_like_the_reference_documents(tmp_path: Path) -> Non
         assert "M0S07013002106" in serial and serial.count("_") > 20
         assert "ООО «Рощинский», ИНН 0278000000" in customer
         assert any("г. Уфа" in line for line in lines)
-        assert any("«07» сентября 2026 г." in line for line in lines)
-        assert any("Главный инженер Иванов И.И. +7 917 000-00-00" in line for line in lines)
+        # Дата составления и контактное лицо потребителя вписываются от руки при подписании.
+        assert any("«___»" in line and "20" in line for line in lines), "заготовка даты потеряна"
+        assert not any("сентября 2026" in line for line in lines)
+        assert not any("Иванов И.И." in line for line in lines)
         position = next(line for line in lines if "Инженер" in line and "\t" in line)
         assert position.endswith("_" * 35), "линия должности потребителя потеряна"
         signature = next(line for line in lines if "Абдрахманов Т.М." in line)
@@ -147,10 +156,39 @@ def test_real_templates_fill_like_the_reference_documents(tmp_path: Path) -> Non
         assert not any("{{" in line for line in lines)
 
     ticket_text = "\n".join(_text(files["Талон.docx"]))
+    # Шаблон задаёт Tahoma на знаке абзаца; значения обязаны нести шрифт явно (иначе Calibri).
+    with zipfile.ZipFile(files["Талон.docx"]) as archive:
+        ticket_root = ET.fromstring(archive.read("word/document.xml"))
+    filled = ("RSM SS-780-13", "ООО «Рощинский»", "0278000000", "Иванов И.И.")
+    for run in ticket_root.iter(f"{{{W}}}r"):
+        text = "".join(node.text or "" for node in run.findall(f"{{{W}}}t"))
+        if not any(value in text for value in filled):
+            continue
+        fonts = run.find(f"{{{W}}}rPr/{{{W}}}rFonts")
+        assert fonts is not None and fonts.get(f"{{{W}}}hAnsi"), text
     assert ticket_text.count("_____________________ Абдрахманов Т.М. М.П.") == 2
     assert ticket_text.count("ООО «Рощинский»") == 2
-    assert ticket_text.count("«07» сентября 2026 г.") == 2
+    assert "сентября 2026" not in ticket_text, "дата постановки на учёт остаётся пустой"
 
     if sys.platform == "darwin":
         for name, path in files.items():
-            assert _render_with_word(path) == 1, f"{name} не поместился на одну страницу"
+            pages, rendered, fonts = _render_with_word(path)
+            assert pages == 1, f"{name} не поместился на одну страницу"
+            if name == "Талон.docx":
+                # Обе печатные копии одной высоты: их строки стоят на одних и тех же позициях.
+                halves = [line for line in rendered.splitlines() if "НАСЕЛЕННЫЙ ПУНКТ" in line]
+                assert len(halves) == 1, halves
+            assert any("Tahoma" in font for font in fonts), f"{name}: {fonts}"
+            if name.startswith("Форма"):
+                # Строка «Должность»: значение слева и линия потребителя справа на одной строке.
+                position_line = next(
+                    line for line in rendered.splitlines() if "Инженер" in line and "___" in line
+                )
+                assert position_line.rstrip().endswith("_" * 20), position_line
+                signature_line = next(
+                    line for line in rendered.splitlines() if "Абдрахманов" in line
+                )
+                assert signature_line.rstrip().endswith("_" * 15), signature_line
+                # Длинное значение на линии не переносится: линия не шире исходной.
+                address_line = next(line for line in rendered.splitlines() if "453100" in line)
+                assert "Ленина, 1" in address_line, address_line

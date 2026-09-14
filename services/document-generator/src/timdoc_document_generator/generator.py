@@ -11,30 +11,47 @@ import jinja2
 from docxtpl import DocxTemplate  # type: ignore[import-untyped]
 
 from timdoc_contracts import EquipmentItem, GenerationRequest, GenerationResult
+from timdoc_document_generator import metrics
 
 
 class DocumentGenerationError(ValueError):
     pass
 
 
-def fill_blank(value: object, width: int) -> str:
-    """Center a value inside a blank line of underscores, keeping the line width when possible.
+BODY_FONT_SIZE = 22  # half-points: values are set in 11 pt regular
 
-    An empty value leaves the blank untouched so the form can still be filled by hand.
+
+def blank_padding(
+    value: object, width: int, size: int = BODY_FONT_SIZE, bold: bool = False
+) -> tuple[int, int]:
+    """How many underscores of the blank's own style go left and right of the value.
+
+    The blank is `width` underscores of `size` half-points, bold or not; the value is set in
+    11 pt regular. Padding is computed from Tahoma metrics so the line keeps its printed
+    length, never growing (a longer line wraps and drags tab-aligned blocks after it).
+    An empty value leaves the whole blank in place for handwriting.
     """
     text = " ".join(str(value or "").split())
     if not text:
-        return "_" * width
-    free = width - len(text)
-    if free <= 0:
-        return text
-    left = free // 2
-    return "_" * left + text + "_" * (free - left)
+        return width, 0
+    unit = metrics.char_width(metrics.UNDERSCORE, bold=bold) * size / BODY_FONT_SIZE
+    free = width * unit - metrics.text_width(text)
+    count = int(free // unit) if free > 0 else 0
+    return count // 2, count - count // 2
+
+
+def blank_left(value: object, width: int, size: int = BODY_FONT_SIZE, bold: bool = False) -> str:
+    return "_" * blank_padding(value, width, size, bold)[0]
+
+
+def blank_right(value: object, width: int, size: int = BODY_FONT_SIZE, bold: bool = False) -> str:
+    return "_" * blank_padding(value, width, size, bold)[1]
 
 
 def template_environment() -> jinja2.Environment:
     environment = jinja2.Environment(autoescape=True)
-    environment.filters["blank"] = fill_blank
+    environment.filters["blank_left"] = blank_left
+    environment.filters["blank_right"] = blank_right
     return environment
 
 
